@@ -1,0 +1,17 @@
+services:
+  master:
+    build:
+      context: ./master
+      dockerfile: Dockerfile
+    container_name: master
+    ports:
+      - "8080:8000"
+
+  connector:
+    build:
+      context: ./connector
+      dockerfile: Dockerfile
+    container_name: connector
+    env_file:
+      - connector/.env
+    
