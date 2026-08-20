@@ -27,7 +27,6 @@ while True:
         logger.info("Connecting...")
         connection = pika.BlockingConnection(params)
         channel = connection.channel()
-        channel.exchange_declare(exchange='energy.x', passive=True)
         result = channel.queue_declare(queue='observer.37.q', passive=True)
         queue_name = result.method.queue
 

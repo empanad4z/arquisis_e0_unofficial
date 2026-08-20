@@ -1,11 +1,14 @@
-from pydantic import BaseModel, Field
-from typing import List
 from datetime import datetime
+from typing import List
+
+from pydantic import BaseModel, Field
+
 
 class Demand(BaseModel):
     city: str
     demand: float
-    unit:str
+    unit: str
+
 
 class PackageBody(BaseModel):
     demands: List[Demand]
@@ -13,8 +16,8 @@ class PackageBody(BaseModel):
     metaContent: str
     constraints: dict = Field(default_factory=dict)
 
+
 class Event(BaseModel):
     idpk: str
     type: str
     packageBody: PackageBody
-
