@@ -8,6 +8,12 @@ services:
       - "8080:8000"
     environment:
       DATABASE_URL: ${DATABASE_URL}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
 
   connector:
     build:
@@ -16,3 +22,5 @@ services:
     container_name: connector
     env_file:
       - connector/.env
+    environment:
+      MASTER_API_URL: http://master:8000
