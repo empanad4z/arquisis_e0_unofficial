@@ -8,6 +8,12 @@ services:
       - "8080:8000"
     environment:
       DATABASE_URL: ${DATABASE_URL}
+    # Lets the container resolve "host.docker.internal" to the host's
+    # gateway IP on Linux (Docker Desktop already does this on Mac/Windows).
+    # Needed so DATABASE_URL can point at a Postgres running natively on
+    # the host for local dev — see .env.local.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s

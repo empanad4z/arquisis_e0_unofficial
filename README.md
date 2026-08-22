@@ -2,6 +2,8 @@
 
 ## Comandos del Makefile
 
+Se utiliza un Makefile para hacer breves los comandos utiles y explicitar el uso de la conexión a la base de datos local (ver sección "Local" del por qué quiero tenerla al momento de desarrollar y probar cosas).
+
 ### Producción / AWS (usa `.env`)
 
 - `make up` — `docker compose up --build`. Levanta `master` + `connector`
@@ -14,37 +16,42 @@
   `make up` esté levantado. Es una acción deliberada, no automática, porque
   toca la base de datos compartida.
 
-### Local (usa `.env.local`, Postgres descartable)
+### Local - Desarrollo (usa `.env.local`, Postgres nativo — sin contenedor)
 
-- `make local` — `docker compose -f docker-compose.yaml -f
-  docker-compose.local.yaml --env-file .env.local up --build`. Levanta
-  `master`, `connector` y un Postgres local (`postgres:16-alpine`) con
-  healthcheck; `master` espera a que el Postgres esté `healthy` antes de
-  arrancar.
-- `make local-down` — baja el stack local (conserva el volumen de datos).
-- `make local-reset` — igual, pero además borra el volumen (`-v`): base de
-  datos local completamente limpia en el próximo `make local`.
+Para desarrollo local no se levanta ningún contenedor de Postgres o se utiliza la RDS de Amazon. **Esto se hace para evitar utilizar la RDS de AWS y disminuir el consumo de créditos. Considerar que la entrega en EC2 SOLO va a utilizar la RDS, sin levantar una base de datos en un contenedor o tenerla creada en la máquina.**
+
+Setup inicial:
+
+```sh
+sudo apt install postgresql                # o `brew install postgresql`, etc.
+sudo -u postgres createuser -P master       # password: master
+sudo -u postgres createdb -O master master
+```
+
+- `make local` — `docker compose --env-file .env.local up --build`. Levanta
+  `master` y `connector`, apuntando a Postgres local vía
+  `host.docker.internal`.
+- `make local-down` — baja el stack local.
+- `make local-reset` — hace `dropdb`/`createdb` contra Postgres local
+  (desde el host): base de datos local completamente limpia.
 - `make local-logs` / `make local-ps` — logs / estado del stack local.
-- `make local-db-shell` — abre un `psql` interactivo contra el Postgres
-  local (adentro del contenedor `postgres`).
+- `make local-db-shell` — abre un `psql` interactivo contra Postgres
+  local (desde el host, no requiere Docker).
 - `make local-migrate` — corre `alembic upgrade head` dentro del contenedor
-  `master` local, contra el Postgres local.
+  `master` local, contra Postgres local.
 - `make local-revision m="mensaje"` — autogenera una migración de Alembic
   comparando los modelos (`master/app/models/*`) contra el Postgres local.
   Se corre en el host (no en Docker) usando `uv`, así no hace falta
-  reconstruir la imagen cada vez que cambiás un modelo. Requiere que el
-  Postgres local esté arriba (`make local` o al menos el servicio
-  `postgres`).
+  reconstruir la imagen cada vez que se cambia un modelo. Requiere que que
+  Postgres local esté corriendo (el servicio del sistema, no un contenedor).
 
 ### Flujo típico de un cambio de esquema
 
 ```sh
-make local                              # levanta Postgres local (y master)
-# editás/agregás un modelo en master/app/models/
+make local                              # levanta master/connector (Postgres local ya corre como servicio del sistema)
+# editas/agregas un modelo en master/app/models/
 make local-revision m="agrega tabla X"  # genera master/alembic/versions/...
-make local-migrate                      # la aplica en local, la revisás
-# commit + push
-make migrate                            # la aplica en AWS, cuando estés listo
+make local-migrate                      # la aplica en local
 ```
 
 ## Base de datos
