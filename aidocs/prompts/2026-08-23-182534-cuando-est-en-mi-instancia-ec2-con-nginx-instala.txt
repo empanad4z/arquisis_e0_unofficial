@@ -1,0 +1,159 @@
+ ▐▛███▛█   Claude Code v2.1.241
+▝▜██████▀  Sonnet 5 · Claude Pro
+  ▝▝ ▝▝    ~/Cursos UC/2026-2/ARQUISIS-IIC2173/arquisis_e0_unofficial
+
+
+❯ Cuando esté en mi instancia ec2 con nginx instalado, como puedo hacer que la  
+  request http a mi instancia ec2 diriga a la api containerizada de docker? Es  
+  decir, que al abrir "api.empanad4z.me" en el navegador entonces me haga un    
+  GET "/" a la api? Como se configura un reverse proxy en nginx? explicalo en   
+  detalle                                                                       
+
+● Voy a revisar rápido el repo para ver si ya tienen configuración de
+  Docker/nginx que deba considerar en la explicación.
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Reviso el docker-compose.yaml: el contenedor master mapea 8080:8000, o sea que
+  la API ya escucha en localhost:8080 del host EC2. Con eso, el reverse proxy
+  es sencillo. Te explico paso a paso.
+
+  Idea general
+
+  Internet → :80 (nginx en el host) → proxy_pass → localhost:8080 (docker -p
+  8080:8000) → contenedor master:8000
+
+  Nginx corre en el host (no en un contenedor), escucha en el puerto 80/443, y
+  cuando llega una request para api.empanad4z.me la reenvía internamente a
+  http://localhost:8080, que es el puerto que Docker ya publicó hacia el host
+  según tu docker-compose.yaml.
+
+  0. Prerrequisitos
+
+  1. DNS: en tu proveedor de dominio (o Route53), un registro A de
+     api.empanad4z.me apuntando a la IP pública de la instancia EC2. Verifica
+     con dig api.empanad4z.me o nslookup api.empanad4z.me.
+  2. Security Group: debe permitir tráfico entrante en el puerto 80 (TCP) desde
+     0.0.0.0/0. Si luego quieres HTTPS, también el 443. El puerto 8080 (el que
+     usa Docker) no necesita estar abierto al exterior — solo nginx habla con
+     él, localmente.
+  3. El contenedor debe estar corriendo: docker compose ps debería mostrar
+     master con el puerto 8080:8000 mapeado, y curl http://localhost:8080/ desde
+     el propio EC2 debería responder.
+
+  1. Crear el server block
+
+  Los archivos de configuración de sitios en nginx (Debian/Ubuntu) viven en
+  /etc/nginx/sites-available/ y se "activan" con un symlink en
+  /etc/nginx/sites-enabled/.
+
+  sudo nano /etc/nginx/sites-available/api.empanad4z.me
+
+  Contenido:
+
+  server {
+      listen 80;
+      listen [::]:80;
+      server_name api.empanad4z.me;
+
+      location / {
+          proxy_pass http://127.0.0.1:8080;
+
+          proxy_set_header Host              $host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+
+          proxy_http_version 1.1;
+          proxy_set_header Connection "";
+      }
+  }
+
+  Qué hace cada línea
+
+  - listen 80; — nginx escucha conexiones HTTP entrantes en el puerto 80 (el que
+    abriste en el Security Group).
+  - server_name api.empanad4z.me; — este bloque solo se usa para requests cuyo
+    header Host sea ese dominio. Así puedes tener varios server {} en la misma
+    instancia (uno por dominio/subdominio) sin que se pisen.
+  - location / { ... } — aplica a cualquier ruta (/, /foo, etc.). Si tu API
+    tuviera rutas que quieras tratar distinto (ej. servir estáticos aparte),
+    agregarías más bloques location.
+  - proxy_pass http://127.0.0.1:8080; — el corazón del reverse proxy: reenvía la
+    request al proceso escuchando en 127.0.0.1:8080, que es el puerto que
+    Docker publicó en el host. Nginx actúa de intermediario: recibe la conexión
+    del cliente y abre una conexión nueva hacia ese destino.
+  - proxy_set_header Host $host; — por defecto, al hacer el proxy, nginx
+    reescribiría el header Host al del destino (127.0.0.1:8080). Esto lo
+    preserva como api.empanad4z.me, para que tu app FastAPI/lo que sea vea el
+    host original (útil si generas URLs absolutas, o si usas ese header para
+    routing).
+  - X-Real-IP / X-Forwarded-For — la conexión que le llega a tu contenedor viene
+    "desde nginx" (127.0.0.1), no desde el cliente real. Estos headers le pasan
+    la IP real del visitante a tu app, si la necesitas para logs, rate
+    limiting, etc.
+  - X-Forwarded-Proto — le dice a tu app si la request original era http o https
+    (relevante más adelante cuando agregues TLS, para que tu app no crea que
+    todo es HTTP inseguro).
+  - proxy_http_version 1.1; + Connection ""; — habilita conexiones keep-alive
+    hacia el backend (por defecto nginx usa HTTP/1.0 y cierra la conexión en
+    cada request al backend, lo que es más lento). No es estrictamente necesario
+    para un GET / simple, pero es buena práctica.
+
+  2. Activar el sitio
+
+  sudo ln -s /etc/nginx/sites-available/api.empanad4z.me
+  /etc/nginx/sites-enabled/
+
+  Si existe el sitio default de nginx y también tiene un server_name _; o
+  default_server en el puerto 80 que quieras dejar, no hay conflicto (nginx
+  elige el bloque cuyo server_name matchee exactamente). Si quieres que solo
+  responda tu API en esta instancia, puedes desactivar el default:
+
+  sudo rm /etc/nginx/sites-enabled/default
+
+  3. Validar y recargar
+
+  sudo nginx -t        # valida la sintaxis de la config
+  sudo systemctl reload nginx   # aplica cambios sin cortar conexiones activas
+
+  Si nginx -t falla, no reinicies — arregla el error primero (nginx te dice el
+  archivo y línea).
+
+  4. Probar
+
+  Desde la propia instancia:
+  curl -H "Host: api.empanad4z.me" http://localhost/
+
+  Desde tu máquina/navegador (ya con DNS propagado):
+  curl -v http://api.empanad4z.me/
+
+  Deberías ver la misma respuesta que te da curl http://localhost:8080/
+  directamente en el EC2. Si abres http://api.empanad4z.me en el navegador, el
+  navegador hace el GET /, nginx lo recibe en el 80, lo reenvía a
+  127.0.0.1:8080, Docker lo entrega al contenedor en su puerto interno 8000, y
+  la respuesta vuelve por el mismo camino.
+
+  5. (Siguiente paso natural) HTTPS con Let's Encrypt
+
+  Ya que tienes el dominio funcionando en HTTP, agregar TLS es casi automático
+  con certbot:
+
+  sudo apt install certbot python3-certbot-nginx
+  sudo certbot --nginx -d api.empanad4z.me
+
+  Esto edita tu mismo server {} para agregar listen 443 ssl;, los certificados,
+  y un redirect automático de 80→443. Requiere abrir el puerto 443 en el
+  Security Group.
+
+  ---
+
+  Nota sobre tu docker-compose.yaml: como el mapeo es "8080:8000", si algún día
+  cambias ese puerto host (por ejemplo a "3000:8000"), tendrías que actualizar
+  el proxy_pass a juego. Si quieres, puedo dejar este archivo de config listo
+  dentro del repo (por ejemplo en deploy/nginx/api.empanad4z.me.conf) para que
+  lo copies a la instancia — dime si te sirve.
+
+✻ Crunched for 47s
+
+※ recap: Goal: get api.empanad4z.me routing to your dockerized master API via nginx reverse proxy on EC2. I gave you the full nginx config (proxying to localhost:8080) and setup steps; next you'd apply it on the instance, or I can save the config file into the repo if you want. (disable recaps in /config)
