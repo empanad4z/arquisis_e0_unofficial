@@ -21,14 +21,13 @@ async def create_event(request: Request, db: AsyncSession = Depends(get_db)):
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Body no es JSON valido")
         
-    valid = True
     try:
         Event.model_validate(payload)
     except ValidationError as exc:
-        valid = False
-        logger.warning("Evento no calza con el schema Event: %s", exc.errors())
+        logger.warning("Evento no calza con el schema Event, se descarta: %s", exc.errors())
+        raise HTTPException(status_code=422, detail=exc.errors())
 
     repository = EventRepository(db)
     event_raw = await repository.create(payload)
     await db.commit()
-    return {"id": event_raw.id, "valid": valid}
+    return {"id": event_raw.id}

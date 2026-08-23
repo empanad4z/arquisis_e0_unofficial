@@ -51,8 +51,6 @@ def callback(ch, method, properties, body):
         return
 
     result = response.json()
-    if not result.get("valid", True):
-        logger.warning("Master guardo el evento pero no calza con su schema")
     logger.info("Evento guardado en master: id=%s", result.get("id"))
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
