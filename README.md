@@ -17,6 +17,11 @@ Se utiliza un Makefile para hacer breves los comandos utiles y explicitar el uso
   `master` que ya está corriendo, contra la base de AWS. Requiere que
   `make up` esté levantado. Es una acción deliberada, no automática, porque
   toca la base de datos compartida.
+- `make db-shell` — abre un `psql` interactivo contra la RDS de AWS, usando
+  el `DATABASE_URL` de `.env`. Corre vía un contenedor descartable
+  `postgres:16-alpine` (la imagen de `master` no trae cliente `psql`), así
+  que solo requiere Docker en el host — pensado para usarse desde la EC2 una
+  vez que ya tiene conectividad con la RDS.
 
 ### Local - Desarrollo (usa `.env.local`, Postgres descartable en Docker)
 

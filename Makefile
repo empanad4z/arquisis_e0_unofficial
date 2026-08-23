@@ -1,4 +1,4 @@
-.PHONY: up start stop down logs ps migrate local local-start local-stop local-down local-logs local-ps local-reset local-db-shell local-migrate local-revision
+.PHONY: up start stop down logs ps migrate db-shell local local-start local-stop local-down local-logs local-ps local-reset local-db-shell local-migrate local-revision
 
 COMPOSE_LOCAL = docker compose -f docker-compose.yaml -f docker-compose.local.yaml --env-file .env.local
 
@@ -26,6 +26,14 @@ ps:
 # whatever DATABASE_URL that container currently has (i.e. the AWS DB).
 migrate:
 	docker compose exec master uv run alembic upgrade head
+
+# Opens an interactive psql shell against the AWS RDS instance, using
+# DATABASE_URL from ".env". Runs via a throwaway postgres:16-alpine
+# container so nothing needs to be installed on the host (e.g. the EC2
+# instance) — the "master" image itself doesn't ship a psql client.
+db-shell:
+	@url=$$(grep '^DATABASE_URL=' .env | cut -d= -f2- | sed 's/postgresql+asyncpg/postgresql/'); \
+	docker run --rm -it postgres:16-alpine psql "$$url"
 
 # --- Local target: reads .env.local, spins up a throwaway Postgres too ---
 
