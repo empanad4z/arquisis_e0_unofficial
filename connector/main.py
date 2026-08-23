@@ -3,6 +3,7 @@ import logging
 import os
 import ssl
 import time
+from pathlib import Path
 
 import pika
 import requests
@@ -17,11 +18,13 @@ MASTER_API_URL = os.getenv("MASTER_API_URL", "http://master:8000").rstrip("/")
 EVENTS_ENDPOINT = f"{MASTER_API_URL}/events"
 REQUEST_TIMEOUT = float(os.getenv("MASTER_API_TIMEOUT", "5"))
 RETRY_DELAY = float(os.getenv("MASTER_API_RETRY_DELAY", "5"))
+HEALTH_FILE = Path(os.getenv("HEALTH_FILE", "/tmp/healthy"))
 
 http = requests.Session()
 
 
 def callback(ch, method, properties, body):
+    HEALTH_FILE.touch()
     logger.info("Received message: %s", body)
 
     try:
