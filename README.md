@@ -1,68 +1,53 @@
 # arquisis_e0_unofficial
 
+Servicios (`docker-compose.yaml`):
+
+- **postgres** — base de datos Postgres, corriendo como container propio.
+- **master** — API FastAPI que recibe eventos y los persiste en Postgres.
+- **connector** — consumidor de RabbitMQ (broker del curso).
+
+## Setup
+
+```sh
+cp .env.example .env   # valores por defecto ya sirven, ajustalos si querés
+make up                # build + levanta postgres, master y connector
+make migrate           # aplica las migraciones de Alembic (primera vez)
+```
+
+`master` espera a que `postgres` esté `healthy` antes de arrancar. `postgres`
+solo publica su puerto a `127.0.0.1:5432` (no al exterior) — accesible desde
+el propio host para herramientas como `make db-shell` o `make revision`,
+pero no expuesto a internet ni siquiera en la EC2.
+
 ## Comandos del Makefile
 
-Se utiliza un Makefile para hacer breves los comandos utiles y explicitar el uso de la conexión a la base de datos local (ver sección "Local" del por qué quiero tenerla al momento de desarrollar y probar cosas).
-
-### Producción / AWS (usa `.env`)
-
-- `make up` — `docker compose up --build`. Levanta `master` + `connector`
-  contra la base de AWS.
-- `make start` / `make stop` — arranca/detiene los contenedores existentes
-  sin reconstruirlos (`docker compose start`/`stop`).
-- `make down` — baja los contenedores.
+- `make up` — `docker compose up --build`. Levanta `postgres`, `master` y
+  `connector`.
+- `make start` / `make stop` — arranca/detiene los containers existentes
+  sin reconstruirlos.
+- `make down` — baja los containers (conserva el volumen de datos).
+- `make reset` — igual, pero además borra el volumen (`-v`): Postgres
+  completamente limpio en el próximo `make up`.
 - `make logs` — sigue los logs de todos los servicios.
-- `make ps` — estado de los contenedores.
-- `make migrate` — corre `alembic upgrade head` **dentro** del contenedor
-  `master` que ya está corriendo, contra la base de AWS. Requiere que
-  `make up` esté levantado. Es una acción deliberada, no automática, porque
-  toca la base de datos compartida.
-- `make db-shell` — abre un `psql` interactivo contra la RDS de AWS, usando
-  el `DATABASE_URL` de `.env`. Corre vía un contenedor descartable
-  `postgres:16-alpine` (la imagen de `master` no trae cliente `psql`), así
-  que solo requiere Docker en el host — pensado para usarse desde la EC2 una
-  vez que ya tiene conectividad con la RDS.
-
-### Local - Desarrollo (usa `.env.local`, Postgres descartable en Docker)
-
-Para desarrollo local se levanta un contenedor de Postgres con Docker
-Compose en vez de usar la RDS de Amazon. **Esto se hace para evitar utilizar
-la RDS de AWS y disminuir el consumo de créditos. Considerar que la entrega
-en EC2 SOLO va a utilizar la RDS, sin levantar una base de datos en un
-contenedor o tenerla creada en la máquina.** Al ser un contenedor (no una
-instalación nativa en el host), el setup es el mismo para cualquier
-desarrollador del equipo — no depende de tener Postgres instalado en la
-máquina de cada uno.
-
-- `make local` — `docker compose -f docker-compose.yaml -f
-  docker-compose.local.yaml --env-file .env.local up --build`. Levanta
-  `master`, `connector` y un Postgres local (`postgres:16-alpine`) con
-  healthcheck; `master` espera a que el Postgres esté `healthy` antes de
-  arrancar.
-- `make local-start` / `make local-stop` — arranca/detiene los contenedores
-  del stack local existentes sin reconstruirlos.
-- `make local-down` — baja el stack local (conserva el volumen de datos).
-- `make local-reset` — igual, pero además borra el volumen (`-v`): base de
-  datos local completamente limpia en el próximo `make local`.
-- `make local-logs` / `make local-ps` — logs / estado del stack local.
-- `make local-db-shell` — abre un `psql` interactivo contra el Postgres
-  local (adentro del contenedor `postgres`).
-- `make local-migrate` — corre `alembic upgrade head` dentro del contenedor
-  `master` local, contra el Postgres local.
-- `make local-revision m="mensaje"` — autogenera una migración de Alembic
-  comparando los modelos (`master/app/models/*`) contra el Postgres local.
-  Se corre en el host (no en Docker) usando `uv`, así no hace falta
-  reconstruir la imagen cada vez que cambiás un modelo. Requiere que el
-  Postgres local esté arriba (`make local` o al menos el servicio
-  `postgres`).
+- `make ps` — estado de los containers.
+- `make migrate` — corre `alembic upgrade head` **dentro** del container
+  `master` que ya está corriendo, contra `postgres`. Requiere que `make up`
+  esté levantado. Es una acción deliberada, no automática.
+- `make revision m="mensaje"` — autogenera una migración de Alembic
+  comparando los modelos (`master/app/models/*`) contra Postgres. Se corre
+  en el host (no en Docker) usando `uv`, así no hace falta reconstruir la
+  imagen cada vez que cambiás un modelo. Requiere que `postgres` esté
+  arriba (`make up`, al menos el servicio `postgres`).
+- `make db-shell` — abre un `psql` interactivo dentro del container
+  `postgres`.
 
 ### Flujo típico de un cambio de esquema
 
 ```sh
-make local                              # levanta Postgres local (y master)
+make up                            # levanta postgres (y master)
 # editás/agregás un modelo en master/app/models/
-make local-revision m="agrega tabla X"  # genera master/alembic/versions/...
-make local-migrate                      # la aplica en local, la revisás
+make revision m="agrega tabla X"   # genera master/alembic/versions/...
+make migrate                       # la aplica, la revisás
 ```
 
 ## Base de datos
@@ -76,3 +61,11 @@ make local-migrate                      # la aplica en local, la revisás
   - `db/` — `base.py` (declarative base) y `session.py` (engine + sesión
     async, dependency `get_db` para FastAPI).
   - `alembic/` — migraciones (en `master/`, junto al `alembic.ini`).
+
+## Deploy en EC2
+
+En la EC2, nginx corre en el host (no containerizado) y hace de reverse
+proxy hacia `master` (ver `nginx/api.empanad4z.me.conf`, publicado en
+`localhost:8080` por `docker-compose.yaml`). El resto del stack —
+`postgres` incluido — corre con `make up` igual que en cualquier otra
+máquina.

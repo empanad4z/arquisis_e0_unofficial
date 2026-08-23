@@ -21,7 +21,8 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # The real URL always comes from Settings (env var DATABASE_URL), so the
-# same alembic.ini works against the local Postgres or the AWS one.
+# same alembic.ini works whether it's run inside the "master" container or
+# on the host against the Postgres container's published port.
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata

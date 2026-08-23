@@ -1,0 +1,554 @@
+ ▐▛███▛█   Claude Code v2.1.241
+▝▜██████▀  Sonnet 5 · Claude Pro
+  ▝▝ ▝▝    ~/Cursos UC/2026-2/ARQUISIS-IIC2173/arquisis_e0_unofficial
+
+
+❯ /clear                                                                        
+
+❯ Actualmente estoy usando un rds como base de datos pero me gasta muchos más   
+  creditos que la misma ec2. Por lo que prefiero que la db esté en otro         
+  container levantado. Esto cambiaria a solo usar un docker compose y olvidarse 
+  de ambientes locales. Puedes migrar todos los cambios para que solo se use    
+  una db como container de docker? master debe poder comunicarse con este       
+  container                                                                     
+
+  Searched for 1 pattern, read 9 files, ran 1 shell command (ctrl+o to expand)
+
+● User answered Claude's questions:
+  ⎿  · La RDS actual probablemente ya tiene eventos guardados en events_raw (el 
+     connector lleva un tiempo consumiendo del broker). Al migrar a un Postgres 
+     en container, ¿qué hacemos con esos datos? → Empezar limpio
+
+  Read 1 file, ran 2 shell commands (ctrl+o to expand)
+
+● Good, that confirms the full scope. Now implementing the changes.
+
+● Write(docker-compose.yaml)
+  ⎿  Added 26 lines, removed 1 line
+       1  services:
+       2 +  postgres:                                                    
+       3 +    image: postgres:16-alpine                                  
+       4 +    container_name: master-db                                  
+       5 +    environment:                                               
+       6 +      POSTGRES_USER: ${POSTGRES_USER}                          
+       7 +      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}                  
+       8 +      POSTGRES_DB: ${POSTGRES_DB}                              
+       9 +    ports:                                                     
+      10 +      # Only reachable from the host itself (e.g. "make db-shel
+         +l" / "make                                                     
+      11 +      # revision" via uv) — never published to the outside worl
+         +d.                                                             
+      12 +      - "127.0.0.1:5432:5432"                                  
+      13 +    volumes:                                                   
+      14 +      - postgres_data:/var/lib/postgresql/data                 
+      15 +    healthcheck:                                               
+      16 +      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $
+         +${POSTGRES_DB}"]                                               
+      17 +      interval: 5s                                             
+      18 +      timeout: 5s                                              
+      19 +      retries: 5                                               
+      20 +                                                               
+      21    master:
+      22      build:
+      23        context: ./master
+     ...
+      26      ports:
+      27        - "8080:8000"
+      28      environment:
+      10 -      DATABASE_URL: ${DATABASE_URL}                            
+      29 +      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POS
+         +TGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}                   
+      30 +    depends_on:                                                
+      31 +      postgres:                                                
+      32 +        condition: service_healthy                             
+      33      healthcheck:
+      34        test: ["CMD", "python", "-c", "import urllib.request; url
+          lib.request.urlopen('http://localhost:8000/health')"]
+      35        interval: 10s
+     ...
+      46        - connector/.env
+      47      environment:
+      48        MASTER_API_URL: http://master:8000
+      49 +                                                               
+      50 +volumes:                                                       
+      51 +  postgres_data:                                               
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Write(.env.example)
+  ⎿  Added 15 lines, removed 4 lines
+       1 -# Copy this file to ".env" and fill in the real values.        
+       1 +# Copy this file to ".env" and adjust if needed.               
+       2  #
+       3  # This is the file "docker compose up" reads by default (Docker
+           Compose
+       4  # auto-loads ".env" from the project root for ${VAR} interpolat
+          ion).
+       5 -# It is meant for the "production" target: the AWS RDS Postgres
+         - instance.                                                     
+       5  #
+       7 -# ".env" itself is git-ignored on purpose — never commit real c
+         -redentials.                                                    
+       6 +# Postgres runs as its own container (service "postgres" in    
+       7 +# docker-compose.yaml) — there's no AWS RDS anymore, and no sep
+         +arate                                                          
+       8 +# local/production split. The same docker-compose.yaml (and the
+         + same .env                                                     
+       9 +# shape) is used for local development and for the EC2 deploy; 
+         +"master"                                                       
+      10 +# builds its DATABASE_URL from these variables inside docker-co
+         +mpose.yaml.                                                    
+      11 +#                                                              
+      12 +# ".env" itself is git-ignored. These aren't secrets in the tra
+         +ditional                                                       
+      13 +# sense — Postgres is never exposed outside the host (see the "
+         +127.0.0.1"                                                     
+      14 +# port binding in docker-compose.yaml) — but real per-deploymen
+         +t values are                                                   
+      15 +# kept out of git regardless, so you can change them per enviro
+         +nment without                                                  
+      16 +# touching a tracked file.                                     
+      17  
+       9 -DATABASE_URL=postgresql+asyncpg://<user>:<password>@<aws-rds-en
+         -dpoint>:5432/<database>                                        
+      18 +POSTGRES_USER=master                                           
+      19 +POSTGRES_PASSWORD=master                                       
+      20 +POSTGRES_DB=master                                             
+
+● Write(.env)
+  ⎿  Added 3 lines, removed 1 line
+      1 -DATABASE_URL=postgresql+asyncpg://postgres:CDavi1d_750-@database
+        --e0-arquisis.cylcwy2o88dj.us-east-1.rds.amazonaws.com:5432/postg
+        -res                                                             
+      1   No newline at end of file
+      2 +POSTGRES_USER=master                                            
+      3 +POSTGRES_PASSWORD=master                                        
+      4 +POSTGRES_DB=master                                              
+
+● Now the Makefile:
+
+● Write(Makefile)
+  ⎿  Added 16 lines, removed 50 lines
+      1 -.PHONY: up start stop down logs ps migrate db-shell local local-
+        -start local-stop local-down local-logs local-ps local-reset loca
+        -l-db-shell local-migrate local-revision                         
+      1 +.PHONY: up start stop down logs ps migrate revision db-shell res
+        +et                                                              
+      2  
+      3 -COMPOSE_LOCAL = docker compose -f docker-compose.yaml -f docker-
+        -compose.local.yaml --env-file .env.local                        
+      4 -                                                                
+      5 -# --- "Production" target: reads .env, talks to the AWS Postgres
+        - instance ---                                                   
+      6 -                                                                
+      3  up:
+      4    docker compose up --build
+      5  
+     ...
+      19    docker compose ps
+      20  
+      21  # Applies alembic migrations inside the running "master" contai
+          ner, against
+      26 -# whatever DATABASE_URL that container currently has (i.e. the 
+         -AWS DB).                                                       
+      22 +# the "postgres" container.                                    
+      23  migrate:
+      24    docker compose exec master uv run alembic upgrade head
+      25  
+      30 -# Opens an interactive psql shell against the AWS RDS instance,
+         - using                                                         
+      31 -# DATABASE_URL from ".env". Runs via a throwaway postgres:16-al
+         -pine                                                           
+      32 -# container so nothing needs to be installed on the host (e.g. 
+         -the EC2                                                        
+      33 -# instance) — the "master" image itself doesn't ship a psql cli
+         -ent.                                                           
+      26 +# Autogenerates a new migration by diffing app/models/* against
+         + Postgres.                                                     
+      27 +# Runs on the host (not in Docker) via uv, so it doesn't need a
+         +n image                                                        
+      28 +# rebuild every time a model changes. Connects through the port
+      29 +# docker-compose.yaml publishes to 127.0.0.1. Requires "make up
+         +" (or at                                                       
+      30 +# least the "postgres" service) to be running.                 
+      31 +# Usage: make revision m="create events_raw table"             
+      32 +revision:                                                      
+      33 +  cd master && uv run alembic revision --autogenerate -m "$(m)"
+      34 +                                                               
+      35 +# Opens an interactive psql shell against the "postgres" contai
+         +ner.                                                           
+      36  db-shell:
+      35 -  @url=$$(grep '^DATABASE_URL=' .env | cut -d= -f2- | sed 's/po
+         -stgresql+asyncpg/postgresql/'); \                              
+      36 -  docker run --rm -it postgres:16-alpine psql "$$url"          
+      37 +  docker compose exec postgres sh -c 'psql -U "$$POSTGRES_USER"
+         + -d "$$POSTGRES_DB"'                                           
+      38  
+      38 -# --- Local target: reads .env.local, spins up a throwaway Post
+         -gres too ---                                                   
+      39 -                                                               
+      40 -local:                                                         
+      41 -  $(COMPOSE_LOCAL) up --build                                  
+      42 -                                                               
+      43 -local-start:                                                   
+      44 -  $(COMPOSE_LOCAL) start                                       
+      45 -                                                               
+      46 -local-stop:                                                    
+      47 -  $(COMPOSE_LOCAL) stop                                        
+      48 -                                                               
+      49 -local-down:                                                    
+      50 -  $(COMPOSE_LOCAL) down                                        
+      51 -                                                               
+      52 -local-logs:                                                    
+      53 -  $(COMPOSE_LOCAL) logs -f                                     
+      54 -                                                               
+      55 -local-ps:                                                      
+      56 -  $(COMPOSE_LOCAL) ps                                          
+      57 -                                                               
+      58 -# Wipe the local Postgres volume (clean slate).                
+      59 -local-reset:                                                   
+      60 -  $(COMPOSE_LOCAL) down -v                                     
+      61 -                                                               
+      62 -local-db-shell:                                                
+      63 -  $(COMPOSE_LOCAL) exec postgres sh -c 'psql -U "$$POSTGRES_USE
+         -R" -d "$$POSTGRES_DB"'                                         
+      64 -                                                               
+      65 -# Applies alembic migrations inside the running local "master" 
+         -container,                                                     
+      66 -# against the local Postgres container.                        
+      67 -local-migrate:                                                 
+      68 -  $(COMPOSE_LOCAL) exec master uv run alembic upgrade head     
+      69 -                                                               
+      70 -# Autogenerates a new migration by diffing app/models/* against
+         - the local                                                     
+      71 -# Postgres. Requires "make local" (or at least the postgres ser
+         -vice) to be                                                    
+      72 -# running, since it connects to localhost:5432 from the host vi
+         -a uv.                                                          
+      73 -# Usage: make local-revision m="create events_raw table"       
+      74 -local-revision:                                                
+      75 -  cd master && uv run alembic revision --autogenerate -m "$(m)"
+      39 +# Wipe the Postgres volume (clean slate).                      
+      40 +reset:                                                         
+      41 +  docker compose down -v                                       
+
+● Now update master/app/core/config.py's comment to drop the stale .env.local /
+  make local references:
+
+● Update(master/app/core/config.py)
+  ⎿  Added 5 lines, removed 4 lines
+       5      model_config = SettingsConfigDict(env_file=".env", extra="i
+          gnore")
+       6  
+       7      app_name: str = "master"
+       8 -    # Matches the local Postgres spun up by "make local" (see .
+         -env.local).                                                    
+       9 -    # Docker Compose always injects a real DATABASE_URL, so thi
+         -s default is                                                   
+      10 -    # only ever used when running outside a container (e.g. `uv
+         - run pytest`,                                                  
+      11 -    # `make local-revision`).                                  
+       8 +    # Matches the Postgres container in docker-compose.yaml (se
+         +rvice                                                          
+       9 +    # "postgres", published to 127.0.0.1:5432). Docker Compose 
+         +always                                                         
+      10 +    # injects a real DATABASE_URL for the "master" container it
+         +self, so this                                                  
+      11 +    # default is only ever used when running outside a containe
+         +r on the host                                                  
+      12 +    # (e.g. `uv run pytest`, `make revision`).                 
+      13      database_url: str = "postgresql+asyncpg://master:master@loc
+          alhost:5432/master"
+      14  
+      15  
+
+● Update(master/alembic/env.py)
+  ⎿  Added 2 lines, removed 1 line
+      21      fileConfig(config.config_file_name)
+      22  
+      23  # The real URL always comes from Settings (env var DATABASE_URL
+          ), so the
+      24 -# same alembic.ini works against the local Postgres or the AWS 
+         -one.                                                           
+      24 +# same alembic.ini works whether it's run inside the "master" c
+         +ontainer or                                                    
+      25 +# on the host against the Postgres container's published port. 
+      26  config.set_main_option("sqlalchemy.url", settings.database_url)
+      27  
+      28  target_metadata = Base.metadata
+
+● Now let's rewrite the README:
+
+  Read 1 file (ctrl+o to expand)
+
+● Write(README.md)
+  ⎿  Added 54 lines, removed 53 lines
+       1  # arquisis_e0_unofficial
+       2  
+       3 -## Comandos del Makefile                                       
+       3 +Servicios (`docker-compose.yaml`):                             
+       4  
+       5 -Se utiliza un Makefile para hacer breves los comandos utiles y 
+         -explicitar el uso de la conexión a la base de datos local (ver 
+         -sección "Local" del por qué quiero tenerla al momento de desarr
+         -ollar y probar cosas).                                         
+       5 +- **postgres** — base de datos Postgres, corriendo como contain
+         +er propio                                                      
+       6 +  (nada de AWS RDS: la RDS consumía más créditos que la propia 
+         +EC2, así que                                                   
+       7 +  la base vive en un container junto a los demás servicios).   
+       8 +- **master** — API FastAPI que recibe eventos y los persiste en
+         + Postgres.                                                     
+       9 +- **connector** — consumidor de RabbitMQ (broker del curso).   
+      10  
+       7 -### Producción / AWS (usa `.env`)                              
+      11 +Un solo `docker-compose.yaml`, un solo `.env`: no hay distinció
+         +n entre                                                        
+      12 +"local" y "producción" — el mismo stack se levanta igual en la 
+         +máquina de                                                     
+      13 +cualquier desarrollador o en la EC2 del curso. `postgres` guard
+         +a sus datos                                                    
+      14 +en un volumen de Docker (`postgres_data`), así que persisten en
+         +tre                                                            
+      15 +reinicios de los containers.                                   
+      16  
+       9 -- `make up` — `docker compose up --build`. Levanta `master` + `
+         -connector`                                                     
+      10 -  contra la base de AWS.                                       
+      11 -- `make start` / `make stop` — arranca/detiene los contenedores
+         - existentes                                                    
+      12 -  sin reconstruirlos (`docker compose start`/`stop`).          
+      13 -- `make down` — baja los contenedores.                         
+      14 -- `make logs` — sigue los logs de todos los servicios.         
+      15 -- `make ps` — estado de los contenedores.                      
+      16 -- `make migrate` — corre `alembic upgrade head` **dentro** del 
+         -contenedor                                                     
+      17 -  `master` que ya está corriendo, contra la base de AWS. Requie
+         -re que                                                         
+      18 -  `make up` esté levantado. Es una acción deliberada, no automá
+         -tica, porque                                                   
+      19 -  toca la base de datos compartida.                            
+      20 -- `make db-shell` — abre un `psql` interactivo contra la RDS de
+         - AWS, usando                                                   
+      21 -  el `DATABASE_URL` de `.env`. Corre vía un contenedor descarta
+         -ble                                                            
+      22 -  `postgres:16-alpine` (la imagen de `master` no trae cliente `
+         -psql`), así                                                    
+      23 -  que solo requiere Docker en el host — pensado para usarse des
+         -de la EC2 una                                                  
+      24 -  vez que ya tiene conectividad con la RDS.                    
+      17 +## Setup                                                       
+      18  
+      26 -### Local - Desarrollo (usa `.env.local`, Postgres descartable 
+         -en Docker)                                                     
+      19 +```sh                                                          
+      20 +cp .env.example .env   # valores por defecto ya sirven, ajustal
+         +os si querés                                                   
+      21 +make up                # build + levanta postgres, master y con
+         +nector                                                         
+      22 +make migrate           # aplica las migraciones de Alembic (pri
+         +mera vez)                                                      
+      23 +```                                                            
+      24  
+      28 -Para desarrollo local se levanta un contenedor de Postgres con 
+         -Docker                                                         
+      29 -Compose en vez de usar la RDS de Amazon. **Esto se hace para ev
+         -itar utilizar                                                  
+      30 -la RDS de AWS y disminuir el consumo de créditos. Considerar qu
+         -e la entrega                                                   
+      31 -en EC2 SOLO va a utilizar la RDS, sin levantar una base de dato
+         -s en un                                                        
+      32 -contenedor o tenerla creada en la máquina.** Al ser un contened
+         -or (no una                                                     
+      33 -instalación nativa en el host), el setup es el mismo para cualq
+         -uier                                                           
+      34 -desarrollador del equipo — no depende de tener Postgres instala
+         -do en la                                                       
+      35 -máquina de cada uno.                                           
+      25 +`master` espera a que `postgres` esté `healthy` antes de arranc
+         +ar. `postgres`                                                 
+      26 +solo publica su puerto a `127.0.0.1:5432` (no al exterior) — ac
+         +cesible desde                                                  
+      27 +el propio host para herramientas como `make db-shell` o `make r
+         +evision`,                                                      
+      28 +pero no expuesto a internet ni siquiera en la EC2.             
+      29  
+      37 -- `make local` — `docker compose -f docker-compose.yaml -f     
+      38 -  docker-compose.local.yaml --env-file .env.local up --build`. 
+         -Levanta                                                        
+      39 -  `master`, `connector` y un Postgres local (`postgres:16-alpin
+         -e`) con                                                        
+      40 -  healthcheck; `master` espera a que el Postgres esté `healthy`
+         - antes de                                                      
+      41 -  arrancar.                                                    
+      42 -- `make local-start` / `make local-stop` — arranca/detiene los 
+         -contenedores                                                   
+      43 -  del stack local existentes sin reconstruirlos.               
+      44 -- `make local-down` — baja el stack local (conserva el volumen 
+         -de datos).                                                     
+      45 -- `make local-reset` — igual, pero además borra el volumen (`-v
+         -`): base de                                                    
+      46 -  datos local completamente limpia en el próximo `make local`. 
+      47 -- `make local-logs` / `make local-ps` — logs / estado del stack
+         - local.                                                        
+      48 -- `make local-db-shell` — abre un `psql` interactivo contra el 
+         -Postgres                                                       
+      49 -  local (adentro del contenedor `postgres`).                   
+      50 -- `make local-migrate` — corre `alembic upgrade head` dentro de
+         -l contenedor                                                   
+      51 -  `master` local, contra el Postgres local.                    
+      52 -- `make local-revision m="mensaje"` — autogenera una migración 
+         -de Alembic                                                     
+      53 -  comparando los modelos (`master/app/models/*`) contra el Post
+         -gres local.                                                    
+      54 -  Se corre en el host (no en Docker) usando `uv`, así no hace f
+         -alta                                                           
+      55 -  reconstruir la imagen cada vez que cambiás un modelo. Requier
+         -e que el                                                       
+      56 -  Postgres local esté arriba (`make local` o al menos el servic
+         -io                                                             
+      57 -  `postgres`).                                                 
+      30 +## Comandos del Makefile                                       
+      31  
+      32 +- `make up` — `docker compose up --build`. Levanta `postgres`, 
+         +`master` y                                                     
+      33 +  `connector`.                                                 
+      34 +- `make start` / `make stop` — arranca/detiene los containers e
+         +xistentes                                                      
+      35 +  sin reconstruirlos.                                          
+      36 +- `make down` — baja los containers (conserva el volumen de dat
+         +os).                                                           
+      37 +- `make reset` — igual, pero además borra el volumen (`-v`): Po
+         +stgres                                                         
+      38 +  completamente limpio en el próximo `make up`.                
+      39 +- `make logs` — sigue los logs de todos los servicios.         
+      40 +- `make ps` — estado de los containers.                        
+      41 +- `make migrate` — corre `alembic upgrade head` **dentro** del 
+         +container                                                      
+      42 +  `master` que ya está corriendo, contra `postgres`. Requiere q
+         +ue `make up`                                                   
+      43 +  esté levantado. Es una acción deliberada, no automática.     
+      44 +- `make revision m="mensaje"` — autogenera una migración de Ale
+         +mbic                                                           
+      45 +  comparando los modelos (`master/app/models/*`) contra Postgre
+         +s. Se corre                                                    
+      46 +  en el host (no en Docker) usando `uv`, así no hace falta reco
+         +nstruir la                                                     
+      47 +  imagen cada vez que cambiás un modelo. Requiere que `postgres
+         +` esté                                                         
+      48 +  arriba (`make up`, al menos el servicio `postgres`).         
+      49 +- `make db-shell` — abre un `psql` interactivo dentro del conta
+         +iner                                                           
+      50 +  `postgres`.                                                  
+      51 +                                                               
+      52  ### Flujo típico de un cambio de esquema
+      53  
+      54  ```sh
+      62 -make local                              # levanta Postgres loca
+         -l (y master)                                                   
+      55 +make up                            # levanta postgres (y master
+         +)                                                              
+      56  # editás/agregás un modelo en master/app/models/
+      64 -make local-revision m="agrega tabla X"  # genera master/alembic
+         -/versions/...                                                  
+      65 -make local-migrate                      # la aplica en local, l
+         -a revisás                                                      
+      57 +make revision m="agrega tabla X"   # genera master/alembic/vers
+         +ions/...                                                       
+      58 +make migrate                       # la aplica, la revisás     
+      59  ```
+      60  
+      61  ## Base de datos
+     ...
+      68    - `repositories/` — acceso a datos (queries de SQLAlchemy).
+      69    - `db/` — `base.py` (declarative base) y `session.py` (engine
+           + sesión
+      70      async, dependency `get_db` para FastAPI).
+      78 -  - `alembic/` — migraciones (en `master/`, junto al `alembic.i
+         -ni`).                                                          
+      71   No newline at end of file
+      72 +  - `alembic/` — migraciones (en `master/`, junto al `alembic.i
+         +ni`).                                                          
+      73 +                                                               
+      74 +## Deploy en EC2                                               
+      75 +                                                               
+      76 +En la EC2, nginx corre en el host (no containerizado) y hace de
+         + reverse                                                       
+      77 +proxy hacia `master` (ver `nginx/api.empanad4z.me.conf`, public
+         +ado en                                                         
+      78 +`localhost:8080` por `docker-compose.yaml`). El resto del stack
+         + —                                                             
+      79 +`postgres` incluido — corre con `make up` igual que en cualquie
+         +r otra                                                         
+      80 +máquina.                                                       
+● Now let's verify the compose file is valid and actually test the full stack
+  end-to-end (build, migrate, hit /events, confirm persistence, then tear down
+  cleanly).
+
+  Ran 4 shell commands (ctrl+o to expand)
+
+● Migrations applied. Now let's test the /events endpoint end-to-end and confirm
+  persistence in the container DB:
+
+  Read 1 file, ran 3 shell commands (ctrl+o to expand)
+
+● End-to-end flow confirmed: master → postgres container via the internal Docker
+  network. Now let's verify make reset cleans the volume properly, then bring
+  everything down cleanly and confirm no leftover containers/volumes.
+
+  Read 1 file, ran 4 shell commands (ctrl+o to expand)
+
+● Tests pass. Let's check the full git status/diff before wrapping up.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Everything looks clean and matches the intended migration. Now let's flag the
+  leftover orphaned Docker volumes I found — they're unrelated to my changes but
+  worth surfacing since they're now dead weight.
+
+● User answered Claude's questions:
+  ⎿  · Al probar el nuevo compose encontré dos volúmenes Docker huérfanos en tu 
+     máquina que ya no corresponde a nada en el repo: 
+     arquisis_e0_unofficial_postgres_local_data (del viejo 
+     docker-compose.local.yaml que acabo de borrar) y 
+     arquisis_e0_unofficial_mongo_data (no corresponde a ningún servicio actual 
+     del repo). ¿Los elimino? → Eliminar ambos
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Both removed. Everything's verified end-to-end and the working tree is clean.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Listo, migración completa de RDS a Postgres containerizado. Resumen:
+
+  Cambios
+  - docker-compose.yaml: ahora incluye el servicio postgres (con volumen
+    postgres_data para persistencia y healthcheck), master espera a que esté
+    healthy y arma su DATABASE_URL desde POSTGRES_USER/PASSWORD/DB. El puerto de
+    Postgres solo se publica a 127.0.0.1:5432 (nunca al exterior, ni en la
+    EC2).
+  - Se eliminaron docker-compose.local.yaml y .env.local — ya no hay distinción
+    local/producción, un solo compose y un solo .env para cualquier máquina.
+  - .env / .env.example: ahora solo piden POSTGRES_USER/PASSWORD/DB (sin URL de
+    RDS).
+  - Makefile: se colapsaron los targets local-* y los de RDS en uno solo (up,
+    migrate, revision, db-shell, reset, etc.).
+  - README.md, config.py y alembic/env.py: comentarios/documentación
+    actualizados para reflejar el nuevo setup.
+
+  Verificado de verdad (no solo escrito): build + make up con Postgres real,
+  alembic upgrade head aplicó las migraciones existentes, un POST /events de
+  prueba se guardó y lo confirmé con SELECT en el container, make reset limpió
+  todo sin dejar containers/volúmenes colgados, y pytest sigue pasando.
+
+  Decisiones que tomaste en el camino: partir con events_raw vacía en el
+  container nuevo (sin migrar el historial de la RDS), y borré dos volúmenes
+  Docker huérfanos que encontré (..._postgres_local_data del compose viejo y
+  ..._mongo_data, que no correspondía a nada del repo actual).
+
+  No hice ningún commit — todo quedó en el working tree para que lo revises.
+  Cuando despliegues esto en la EC2 solo hace falta cp .env.example .env y make 
+  up && make migrate; ya no se necesita conectividad de la EC2 hacia RDS.
+
+✻ Crunched for 5m 36s
