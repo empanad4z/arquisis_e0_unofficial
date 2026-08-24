@@ -54,7 +54,7 @@ def callback(ch, method, properties, body):
         return
 
     result = response.json()
-    logger.info("Evento guardado en master: id=%s", result.get("id"))
+    logger.info("Evento guardado en master: ids=%s", result.get("ids"))
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
