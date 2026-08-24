@@ -9,7 +9,7 @@ from alembic import context
 
 from app.core.config import settings
 from app.db.base import Base
-from app.models.event_raw import EventRaw  # noqa: F401 — registers the table on Base.metadata
+from app.models.demand_history import DemandHistory  # noqa: F401 — registers the table on Base.metadata
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
