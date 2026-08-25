@@ -25,7 +25,7 @@ http = requests.Session()
 
 def callback(ch, method, properties, body):
     HEALTH_FILE.touch()
-    logger.info("Received message: %s", body)
+    logger.info("Received message")
 
     try:
         event = json.loads(body)
