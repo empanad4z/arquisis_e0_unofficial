@@ -1,0 +1,754 @@
+╭─── Claude Code v2.1.238 ─────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│                 Welcome back David!                │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▛█                      │ ─────────────────────── │
+│                      ▝▜██████▀                     │ What's new              │
+│                        ▝▝ ▝▝                       │ Added a `keybindingFla… │
+│  Opus 5 · Claude Pro · davidparra812@gmail.com's   │ Plugin marketplaces: `… │
+│  Organization                                      │ A catalog entry's `hea… │
+│  ~/…/2026-2/arquisis/arquisis_e0_unofficial/master │ /release-notes for more │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+❯ Como puedo implementar filtro de campos con fastapi? con la clase Query de    
+  pydantic? El endpoint {url}/history debe permitir filtrar las demandas por    
+  cada una de sus propiedades,                                                  
+  especialmente los relacionados con tiempo. Por ejemplo:                       
+  {url}/history?receivedAt=2025-08-08                                           
+  Nota: es importante que sea paginada pues el emisor de eventos enviará miles  
+  de paquetes durante el                                                        
+  desarrollo y corrección de sus proyectos, por lo que si hacen una consulta a  
+  la base de datos para que                                                     
+  traiga todos los eventos recibidos es probable que se caigan sus entregas.    
+
+● I'll look at the current code first to give you something that fits your
+  project.
+
+  Searched for 1 pattern, ran 3 shell commands (ctrl+o to expand)
+
+● Ya vi el código. Un par de precisiones antes de implementar:
+
+  - Query es de FastAPI, no de Pydantic (Pydantic aporta el modelo y la
+    validación).
+  - Con FastAPI ≥0.115 (tienen 0.141) se puede usar un modelo Pydantic completo 
+    como query params con Annotated[Modelo, Query()] — mucho mejor que 15
+    parámetros sueltos en la firma.
+
+  Implemento eso sobre tu estructura actual.
+
+  Read 1 file (ctrl+o to expand)
+
+● Ese day_bounds me quedó feo (construcción hacky de timedelta) y además
+  pertenece al repositorio, no al schema. Lo corrijo:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Ahora el schema de respuesta paginada y el repositorio:
+
+  Read 2 files (ctrl+o to expand)
+
+● Y el endpoint:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Ahora lo pruebo de verdad, con una base de datos y datos reales:
+
+  Listed 2 directories, ran 5 shell commands (ctrl+o to expand)
+
+● Los 13 casos pasan. Verifico que Swagger muestre bien los parámetros:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Listo y probado. Respondiendo primero tus dudas:
+
+  Query es de FastAPI, no de Pydantic. Pero desde FastAPI 0.115 (uds. tienen
+  0.141) puedes envolver un modelo Pydantic entero como query params con
+  Annotated[Modelo, Query()], en vez de declarar 18 parámetros sueltos en la
+  firma. Eso es lo que implementé.
+
+  Qué cambió
+
+  app/schemas/filters.py (nuevo) — DemandHistoryQuery, un modelo con todos los
+  filtros + orden + paginación. Tres detalles que importan:
+
+  - alias_generator=to_camel → la URL usa receivedAtFrom y el código Python usa
+    received_at_from. Sin escribir alias= en cada campo.
+  - extra="forbid" → ?recievedAt=... (typo) devuelve 422 en vez de ignorarse
+    silenciosamente y retornar todo. Esto vale oro cuando el corrector prueba tu
+    endpoint.
+  - Validador assume_utc → tus columnas son TIMESTAMPTZ; comparar contra un
+    datetime naive falla o desplaza la consulta.
+
+  app/repositories/demand_history_repository.py — _build_conditions() traduce
+  filtros a SQL (los None no aportan nada), más search() y count().
+
+  app/api/routes/events.py — el endpoint quedó en 12 líneas:
+
+  @router.get("/history", response_model=Page[DemandHistoryOut])
+  async def show_events(
+      query: Annotated[DemandHistoryQuery, Query()],
+      db: AsyncSession = Depends(get_db),
+  ):
+
+  Sobre la paginación (tu preocupación principal)
+
+  Tres defensas contra que se caiga:
+
+  1. limit con tope duro le=100 — ?limit=5000 da 422. Sin esto, un cliente pide
+     todo y te tumba el proceso.
+  2. LIMIT/OFFSET siempre presentes, incluso sin filtros (default 25).
+  3. Desempate por id en el ORDER BY — sin orden total, dos páginas consecutivas
+     pueden repetir u omitir filas cuando el campo ordenado empata (muy
+     probable con receivedAt en inserciones masivas).
+
+  La respuesta ahora es {items, total, page, limit, pages} en vez de una lista
+  pelada, para que el cliente sepa cuántas páginas hay. Esto cambia el contrato
+  — si tu frontend ya consume /history como array, lee response.items.
+
+  Filtros de tiempo
+
+  ?receivedAt=2025-08-08 filtra el día completo (>= 00:00 y < 00:00 del día 
+  siguiente, en UTC), que es lo que espera el ejemplo del enunciado. Para rangos
+  precisos:
+  ?receivedAtFrom=2025-08-08T10:00:00&receivedAtTo=2025-08-09T18:00:00. Igual
+  para validUntil.
+
+  Verificación
+
+  Levanté un venv con SQLite en memoria, sembré 30 registros y corrí 13 casos —
+  todos pasan: filtros simples, combinados, rangos numéricos, rango de fechas,
+  orden asc/desc, paginación página 2, y los 4 casos de rechazo (typo, limit
+  excesivo, sortBy inválido, fecha inválida). Los 18 parámetros aparecen
+  correctamente en /docs.
+
+  Dos cosas que dejé fuera a propósito, dime si las quieres:
+
+  - Índices para city y type — solo idpk y received_at los tienen. Con miles de
+    filas y filtros por ciudad, una migración de Alembic con esos índices
+    ayudaría bastante.
+  - count(*) en cada request — está bien con miles de filas; si llegan a
+    millones se vuelve el cuello de botella y convendría hacerlo opcional o
+    pasar a keyset pagination (?after=<id>).
+
+✻ Churned for 3m 40s
+
+❯ No es todo muy manual? En js, el orm de sequelize no venia con todas esas     
+  implementaciones y era más fácil de usar? Como funciona lo de repositorio? Es 
+  necesario?                                                                    
+
+● Buenas preguntas, y la respuesta corta a la segunda es: no, Sequelize no te 
+  ahorra lo que parece. Déjame revisar algo primero.
+
+  Listed 1 directory (ctrl+o to expand)
+
+● Tu README ya documenta repositories/ como decisión de arquitectura del
+  proyecto, así que la pregunta es buena y vale la pena responderla bien.
+
+  1. ¿Sequelize sería más fácil? Casi no
+
+  Este es el mismo filtro en Sequelize:
+
+  const where = {};
+  if (q.city) where.city = q.city;
+  if (q.idpk) where.idpk = q.idpk;
+  if (q.demandMin || q.demandMax) {
+    where.demand = {};
+    if (q.demandMin) where.demand[Op.gte] = q.demandMin;
+    if (q.demandMax) where.demand[Op.lte] = q.demandMax;
+  }
+  if (q.receivedAt) {
+    const start = new Date(q.receivedAt);
+    where.receivedAt = { [Op.gte]: start, [Op.lt]: addDays(start, 1) };
+  }
+  const { count, rows } = await DemandHistory.findAndCountAll({ where, limit,
+  offset });
+
+  Es la misma escalera de if que _build_conditions. Ningún ORM te la ahorra,
+  porque el ORM no sabe cuáles de tus query params vinieron y cuáles no — eso es
+  lógica tuya.
+
+  Donde Sequelize sí gana, y te lo concedo: findAndCountAll hace count + filas
+  en una sola llamada. Yo escribí count() y search() por separado; SQLAlchemy no
+  trae equivalente. Son ~5 líneas.
+
+  Donde pierde feo: en ese código q.limit es el string "5000" y nadie lo topea.
+  new Date("no-es-fecha") da Invalid Date y genera una query silenciosamente
+  rota — no un 422, sino resultados vacíos que vas a debuggear a ciegas.
+  ?recievedAt= (typo) se ignora y te devuelve todo, que es exactamente el
+  escenario que te tumba la entrega.
+
+  Para tapar eso en Express le agregás Zod o Joi… y terminás escribiendo el
+  equivalente de DemandHistoryQuery. Lo que te pareció trabajo manual es casi 
+  todo validación, y JS te la "ahorra" solamente no haciéndola.
+
+  2. Sí existen librerías que lo hacen declarativo
+
+  fastapi-filter te deja escribir los filtros atados al modelo, y
+  fastapi-pagination te da paginate() en una línea. Son reales y funcionan.
+
+  Mi recomendación para este proyecto: no las uses todavía. Son ~60 líneas
+  explícitas que entendés completamente, contra una dependencia cuya magia vas a
+  tener que debuggear a las 3am antes de la entrega. Y en un curso de
+  arquitectura, el código explícito es más defendible frente al corrector. Si en
+  E2 tenés seis endpoints con filtros, ahí sí vale la pena y la refactorización
+  es directa.
+
+  3. El repositorio: qué hace y si lo necesitás
+
+  Es solo una clase que concentra las queries para que el endpoint no importe 
+  SQLAlchemy. Comparalo:
+
+  # Sin repositorio: la ruta habla SQL
+  stmt = select(DemandHistory).where(...).offset(...).limit(...)
+  result = await db.execute(stmt)
+
+  # Con repositorio: la ruta habla del dominio
+  items = await repository.search(query)
+
+  ¿Es necesario? No. Es una elección, no un requisito técnico. Para el tamaño
+  actual, meter la query en la ruta funcionaría igual de bien.
+
+  Lo que te compra concretamente: podés testear la ruta con un repositorio falso
+  (sin levantar Postgres), y si mañana el connector necesita la misma query, la
+  llama en vez de duplicarla.
+
+  Y notá que el patrón no vale lo mismo en todos lados. Tu find_by_id es un
+  passthrough de una línea a session.get — puro ruido. Pero search() +
+  _build_conditions() son 40 líneas que definitivamente no querés dentro de un
+  handler HTTP. El patrón se gana el sueldo donde hay lógica real.
+
+  Mi recomendación: dejalo. Ya está ahí, ya está documentado en tu README,
+  cuesta un archivo, y estás en un curso de arquitectura donde mostrar capas
+  separadas juega a favor. La alternativa no es "menos código", es "el mismo
+  código en peor lugar".
+
+  Si querés ver cómo quedaría el endpoint sin la capa de repositorio para
+  comparar de verdad, te lo escribo en un scratch y decidís mirando ambos.
+
+✻ Brewed for 1m 6s
+
+※ recap: Goal was adding filtering and pagination to the /history endpoint, which is implemented and tested. I then answered your questions about Sequelize and the repository pattern. Next: tell me if you want the endpoint written without the repository layer for comparison. (disable recaps in /config)
+
+❯ Explicame en detalle los cambios hechos                                       
+
+● Déjame releer el estado final de los archivos para explicarte exactamente lo
+  que quedó.
+
+  Read 1 file, ran 1 shell command (ctrl+o to expand)
+● Antes de explicar, verifico que no quedaron cabos sueltos del rename:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Todo limpio: nadie más usaba list_paginated, y Request/Query siguen en uso.
+  Déjame generar el SQL real para que la explicación sea exacta y no de memoria:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Ahora sí, el recorrido completo. Son 4 archivos: uno nuevo y tres modificados.
+
+  ---
+
+  1. app/schemas/filters.py (nuevo)
+
+  Es el corazón del cambio. Un solo modelo Pydantic que declara todo lo que
+  /history acepta por URL.
+
+  Por qué un modelo y no parámetros sueltos
+
+  query: Annotated[DemandHistoryQuery, Query()]
+
+  Query() le dice a FastAPI "esto no es el body, sacalo del query string". Al
+  ver un modelo Pydantic ahí, FastAPI recolecta todos los query params de la
+  URL, arma un dict y lo valida contra el modelo. La alternativa era escribir 18
+  parámetros en la firma de la función.
+
+  alias_generator=to_camel (línea 19)
+
+  Convierte cada nombre de campo a camelCase para la URL: received_at_from →
+  ?receivedAtFrom. Así la API se ve idiomática para quien la consume, y el
+  código Python mantiene snake_case. Sin esto tendrías que escribir
+  Field(alias="receivedAtFrom") en cada uno de los 18 campos.
+
+  populate_by_name=True permite además construir el modelo desde Python usando
+  el nombre real (DemandHistoryQuery(received_at_from=...)), útil en tests.
+
+  extra="forbid" (línea 23)
+
+  El más importante en la práctica. Por defecto Pydantic ignora claves
+  desconocidas. Eso significa que ?recievedAt=2025-08-08 (con el typo) pasaría
+  sin filtro y te devolvería la tabla entera. Con forbid eso es un 422.
+
+  Detalle crítico de implementación: por esto page y limit tienen que estar
+  dentro del modelo. Si los dejabas como parámetros sueltos de la función,
+  extra="forbid" los vería como claves desconocidas y rechazaría toda request
+  que los usara.
+
+  date vs datetime: dos semánticas distintas (líneas 41-50)
+
+  received_at: date | None          # ?receivedAt=2025-08-08     → el día 
+  completo
+  received_at_from: datetime | None # ?receivedAtFrom=...T10:00  → instante 
+  exacto
+
+  El tipo declarado define el comportamiento del filtro. date no puede matchear
+  por igualdad contra un TIMESTAMPTZ (ninguna fila tiene exactamente
+  medianoche), así que se expande a un rango de 24h en el repositorio. El del
+  enunciado (?receivedAt=2025-08-08) es el primer caso.
+
+  El validador assume_utc (líneas 58-68)
+
+  Tus columnas son DateTime(timezone=True) → TIMESTAMPTZ en Postgres. Si alguien
+  manda ?receivedAtFrom=2025-08-08T10:00:00 sin zona, Python lo parsea como
+  naive y compararlo contra una columna con zona revienta o desplaza 
+  silenciosamente el resultado según el timezone del server. El validador lo
+  fuerza a UTC.
+
+  Solo aplica a los 4 campos datetime; los date no lo necesitan porque
+  _day_bounds ya construye sus límites en UTC.
+
+  SortField como Literal (línea 7)
+
+  SortField = Literal["id", "receivedAt", "validUntil", "demand", "city",
+  "type"]
+
+  Whitelist. Si sort_by fuera un str libre, estarías metiendo input del usuario
+  en un ORDER BY — vector clásico de inyección/filtración. Con Literal, Pydantic
+  rechaza cualquier otra cosa con 422 antes de llegar al repositorio, y encima
+  Swagger lo muestra como dropdown.
+
+  ---
+
+  2. app/repositories/demand_history_repository.py
+
+  Aquí vive la traducción de filtros → SQL.
+
+  _build_conditions() — la escalera de if
+
+  if query.city is not None:
+      conditions.append(DemandHistory.city == query.city)
+
+  Devuelve una lista de condiciones. Luego:
+
+  .where(*_build_conditions(query))
+
+  El truco: .where() sin argumentos no genera cláusula WHERE. Por eso el caso
+  "sin filtros" no necesita un if especial — la lista vacía se desempaqueta en
+  nada. Lo confirmé compilando el SQL:
+
+  -- A) /history  (sin filtros)
+  SELECT ... FROM demand_history ORDER BY ... LIMIT 25 OFFSET 0
+
+  is not None, no truthiness — y por qué importa
+
+  Fijate que uso if query.demand_min is not None, no if query.demand_min.
+  Acordate del snippet de Sequelize que te mostré en la respuesta anterior:
+
+  if (q.demandMin) where.demand[Op.gte] = q.demandMin;   // ← BUG
+
+  Ese código descarta silenciosamente ?demandMin=0, porque 0 es falsy. Mi
+  versión no:
+
+  -- C) ?demandMin=0&demandMax=50
+  WHERE demand_history.demand >= 0.0 AND demand_history.demand <= 50.0
+
+  Mismo problema con ?city= (string vacío) o cualquier valor cero. Es un bug
+  real y sutil, y la única defensa es el chequeo explícito contra None.
+
+  El loop de fechas (líneas ~48-58)
+
+  received_at y valid_until tienen lógica idéntica (día / desde / hasta), así
+  que en vez de duplicar 12 líneas itero sobre una tupla de tuplas con la
+  columna correspondiente.
+
+  _day_bounds usa >= inicio y < día siguiente, no BETWEEN. Con BETWEEN el límite
+  superior es inclusivo y te comerías o duplicarías registros exactamente a
+  medianoche. El SQL generado:
+
+  -- B) ?city=Santiago&receivedAt=2025-08-08&limit=10&page=2
+  WHERE city = 'Santiago'
+    AND received_at >= '2025-08-08 00:00:00+00:00'
+    AND received_at <  '2025-08-09 00:00:00+00:00'
+  ORDER BY ... LIMIT 10 OFFSET 10
+
+  SORTABLE_COLUMNS — segunda barrera
+
+  Un dict de string → columna SQLAlchemy. Aunque Literal ya validó, esto
+  garantiza que nunca se interpola texto crudo en el ORDER BY; solo se puede
+  llegar a un objeto columna que vos declaraste.
+
+  count() y search() en vez de list_paginated()
+
+  Reemplacé el método viejo por dos, porque necesitás dos queries distintas
+  contra el mismo WHERE: una cuenta el total (para pages) y otra trae la página.
+  Ambas llaman a _build_conditions, así que no pueden desincronizarse.
+
+  or 0 en count() porque session.scalar() tiene tipo int | None.
+
+  El desempate en ORDER BY
+
+  .order_by(order_by, DemandHistory.id.desc())
+
+  Sin esto, ordenando por receivedAt con miles de eventos insertados en lote
+  (muchos con el mismo timestamp), Postgres puede devolver los empates en orden 
+  distinto entre dos requests. Resultado: la página 2 repite u omite filas que
+  ya viste en la página 1. El id como criterio final hace el orden total y
+  determinista.
+
+  Detalle menor que noté al compilar el SQL: con el orden por defecto queda
+  ORDER BY id DESC, id DESC — redundante. Postgres lo ignora sin costo, pero es
+  feo. Se arregla en dos líneas (agregar el desempate solo si sort_by != "id");
+  decime si querés y lo hago.
+
+  ---
+
+  3. app/schemas/demand_history.py
+
+  Se agregó solo esto:
+
+  class Page[T](BaseModel):
+      items: list[T]
+      total: int
+      page: int
+      limit: int
+      pages: int
+
+  Genérico, para reusarlo si mañana paginás otra entidad. Usa la sintaxis de
+  genéricos de PEP 695 (Python 3.12+, que tu pyproject.toml ya exige) — el
+  equivalente viejo era Generic[T] + TypeVar.
+
+  No necesita from_attributes: los objetos ORM van en items, y DemandHistoryOut
+  (que sí lo tiene) es quien los sabe leer.
+
+  ---
+
+  4. app/api/routes/events.py
+
+  El endpoint quedó así:
+
+  @router.get("/history", response_model=Page[DemandHistoryOut])
+  async def show_events(
+      query: Annotated[DemandHistoryQuery, Query()],
+      db: AsyncSession = Depends(get_db),
+  ):
+      repository = DemandHistoryRepository(db)
+      total = await repository.count(query)
+      items = await repository.search(query)
+      return Page(items=items, total=total, page=query.page,
+                  limit=query.limit, pages=math.ceil(total / query.limit))
+
+  Un solo parámetro para los 18 filtros. Y response_model=Page[DemandHistoryOut]
+  hace que FastAPI genere el schema OpenAPI correcto y serialice los objetos
+  ORM a JSON.
+
+  POST /events y GET /history/{id} no los toqué.
+
+  ---
+
+  El flujo completo de un request
+
+  GET /history?city=Santiago&receivedAt=2025-08-08&limit=10&page=2
+
+  1. FastAPI junta los query params y los valida contra DemandHistoryQuery.
+     "2025-08-08" → date(2025,8,8), "10" → int. Si hubiera un param desconocido,
+     un limit=5000, o una fecha inválida → 422 sin tocar la DB.
+  2. La ruta recibe un objeto ya validado y tipado. No parsea nada.
+  3. count() → SELECT count(*) ... WHERE city=... AND received_at >= ... AND < 
+     ...
+  4. search() → mismo WHERE + ORDER BY ... LIMIT 10 OFFSET 10
+  5. Page se arma; DemandHistoryOut (con from_attributes=True) lee cada objeto
+     ORM y lo vuelve JSON.
+
+  La validación entera ocurre en el paso 1 — antes de que la base de datos vea
+  nada. Esa es la parte que en Express tendrías que construir a mano con Zod.
+
+  ---
+
+  Cambios de comportamiento a tener en cuenta
+
+  ┌──────────────────┬─────────────────────┬────────────────────────────────┐
+  │                  │        Antes        │             Ahora              │
+  ├──────────────────┼─────────────────────┼────────────────────────────────┤
+  │ Respuesta        │ [{...}, {...}]      │ {items: [...], total, page,    │
+  │                  │                     │ limit, pages}                  │
+  ├──────────────────┼─────────────────────┼────────────────────────────────┤
+  │ ?limit=5000      │ funcionaba          │ 422                            │
+  │                  │ (peligroso)         │                                │
+  ├──────────────────┼─────────────────────┼────────────────────────────────┤
+  │ Param con typo   │ ignorado → devolvía │ 422                            │
+  │                  │  todo               │                                │
+  ├──────────────────┼─────────────────────┼────────────────────────────────┤
+  │ list_paginated() │ existía             │ eliminado (verifiqué: nadie lo │
+  │                  │                     │  llamaba)                      │
+  └──────────────────┴─────────────────────┴────────────────────────────────┘
+
+  El primero es el único que rompe clientes: si algo ya consume /history
+  esperando un array, ahora tiene que leer .items.
+
+✻ Sautéed for 1m 57s
+
+※ recap: We added filtering and pagination to your `/history` endpoint in FastAPI, and I finished walking you through all four changed files. Nothing is pending; optionally I can clean up the redundant `ORDER BY id DESC, id DESC` if you want. (disable recaps in /config)
+
+❯ Explicame el arvchivo filters.py de schemas                                   
+
+● Buena idea profundizar en ese archivo — es donde está casi toda la lógica.
+  Déjame ejecutarlo para mostrarte qué hace realmente con cada input, en vez de
+  explicártelo en abstracto:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Perfecto, ahora puedo explicártelo con evidencia real de qué hace cada línea.
+  El archivo tiene una sola responsabilidad: definir el contrato de entrada de
+  /history y validarlo. No sabe nada de SQL ni de la base de datos.
+
+  ---
+
+  Los imports (líneas 1-5)
+
+  from datetime import date, datetime, time, timezone
+  from typing import Literal
+  from pydantic import BaseModel, ConfigDict, Field, field_validator
+  from pydantic.alias_generators import to_camel
+
+  time en realidad ya no se usa acá — quedó de cuando day_bounds vivía en este
+  archivo antes de moverlo al repositorio. Es un import muerto, inofensivo pero
+  sucio. Igual con date… no, date sí se usa (línea 41). Solo sobra time.
+
+  ---
+
+  SortField (línea 7)
+
+  SortField = Literal["id", "receivedAt", "validUntil", "demand", "city",
+  "type"]
+
+  Un alias de tipo. Literal significa "el valor solo puede ser exactamente uno
+  de estos strings". No es una convención ni un comentario: Pydantic lo hace
+  cumplir en runtime.
+
+  sortBy=meta_content
+  → literal_error: Input should be 'id', 'receivedAt', 'validUntil', 'demand',
+  'city' or 'type'
+
+  Está afuera de la clase porque es un tipo reutilizable, y porque
+  SORTABLE_COLUMNS en el repositorio tiene que mapear exactamente esas mismas
+  claves.
+
+  ---
+
+  model_config (líneas 18-24)
+
+  Los tres ajustes que cambian el comportamiento global del modelo.
+
+  alias_generator=to_camel
+
+  Genera automáticamente un alias camelCase por cada campo: received_at_from →
+  receivedAtFrom. El alias es el nombre público (el de la URL); el nombre del
+  campo es el interno.
+
+  Sin esto, los 18 campos necesitarían un Field(alias="...") a mano.
+
+  populate_by_name=True
+
+  Permite construir el modelo por cualquiera de los dos nombres:
+
+  input: {'received_at_from': '2025-08-08T10:00:00'}   ← snake_case
+  → received_at_from = datetime(2025, 8, 8, 10, 0, tzinfo=utc)   ✓
+
+  Sin este flag, tras poner el alias generator solo funcionaría receivedAtFrom,
+  y escribir tests en Python sería incómodo. La URL sigue usando camelCase
+  igual.
+
+  extra="forbid"
+
+  input: {'recievedAt': '2025-08-08'}     ← typo
+  → extra_forbidden: Extra inputs are not permitted
+
+  Por defecto Pydantic descarta en silencio las claves que no conoce. Ese
+  default es el que te devuelve la tabla completa cuando escribís mal un filtro.
+
+  ⚠️ Consecuencia de diseño: por esto page y limit están dentro del modelo. Si
+  los dejabas sueltos en la firma de la función, forbid los vería como claves
+  ajenas y rechazaría toda request que los usara. Con forbid, el modelo tiene
+  que declarar el 100% de los params que el endpoint acepta.
+
+  ---
+
+  Los campos
+
+  Todos siguen la forma nombre: tipo | None = None. El = None es lo que los hace
+  opcionales; sin default, Pydantic los exigiría.
+
+  Igualdad simple (27-33)
+
+  idpk: str | None = None
+  type: str | None = None
+  city: str | None = None
+  unit: str | None = None
+  meta_content: str | None = None
+
+  Nada especial. (type pisa el builtin de Python, pero solo dentro del cuerpo de
+  la clase, así que es inofensivo — y el campo del modelo se llama así.)
+
+  meta_content se separa del grupo anterior porque el repositorio lo trata
+  distinto: ilike (match parcial) en vez de ==.
+
+  Numéricos (36-38)
+
+  demand: float | None = None
+  demand_min: float | None = None
+  demand_max: float | None = None
+
+  Tres campos para un solo atributo: valor exacto, o los extremos de un rango.
+  Nada impide combinarlos; simplemente se acumulan las condiciones.
+
+  Temporales (41-50)
+
+  received_at: date | None = Field(default=None, description="Filtra por dia 
+  completo en UTC. Ej: 2025-08-08")
+  received_at_from: datetime | None = None
+  received_at_to: datetime | None = None
+
+  El tipo declarado define la semántica del filtro. date → día completo;
+  datetime → instante exacto. Es la diferencia entre ?receivedAt=2025-08-08 y
+  ?receivedAtFrom=2025-08-08T10:00:00.
+
+  Acá Field() aparece solo para agregar description, que es lo que Swagger
+  muestra bajo el input. Los demás campos no lo necesitan: Field() hace falta
+  únicamente cuando querés metadata o restricciones.
+
+  Orden y paginación (53-56)
+
+  sort_by: SortField = "id"
+  order: Literal["asc", "desc"] = "desc"
+  page: int = Field(default=1, ge=1)
+  limit: int = Field(default=25, ge=1, le=100)
+
+  Estos no son | None: siempre tienen un valor. ge/le son las restricciones
+  numéricas (>= / <=), y le=100 es el tope duro que protege tu servidor:
+
+  limit=5000 → less_than_equal: Input should be less than or equal to 100
+
+  Sin parámetros, el modelo queda en: {'sort_by': 'id', 'order': 'desc', 'page':
+  1, 'limit': 25}.
+
+  ---
+
+  La coerción de tipos (lo que pasa gratis)
+
+  Todo lo que llega por URL es string. Pydantic lo convierte según la anotación:
+
+  input: {'limit': '10', 'page': '2', 'demand': '42.5'}
+  → limit  = 10     (int)
+  → page   = 2      (int)
+  → demand = 42.5   (float)
+
+  Y rechaza lo que no puede convertir:
+
+  receivedAt=ayer → date_from_datetime_parsing: Input should be a valid date or
+  datetime
+
+  Esta es exactamente la capa que en Express te falta: ahí q.limit seguiría
+  siendo el string "5000".
+
+  ---
+
+  El validador assume_utc (líneas 58-68)
+
+  @field_validator("received_at_from", "received_at_to", "valid_until_from", 
+  "valid_until_to")
+  @classmethod
+  def assume_utc(cls, value: datetime | None) -> datetime | None:
+      if value is not None and value.tzinfo is None:
+          return value.replace(tzinfo=timezone.utc)
+      return value
+
+  Mecánica: @field_validator recibe los nombres de los campos a los que aplica y
+  corre después del parseo de cada uno. El @classmethod va debajo (Pydantic lo
+  exige; si lo invertís, falla). Lo que retornás reemplaza el valor del campo.
+
+  Por qué existe: tus columnas son DateTime(timezone=True) → TIMESTAMPTZ.
+  Comparar eso contra un datetime naive rompe la query o, peor, la desplaza
+  según la zona del servidor — un bug que solo aparece en producción.
+
+  Solo rellena la zona cuando falta; si venía, la respeta:
+
+  receivedAtFrom=2025-08-08T10:00:00        → tzinfo=utc          (rellenado)
+  receivedAtFrom=2025-08-08T10:00:00-04:00  → tzinfo=TzInfo(-14400) (respetado)
+
+  El segundo caso importa acá: si mandás horario de Chile (-04:00/-03:00),
+  Postgres compara instantes absolutos correctamente sin necesidad de que vos
+  conviertas nada.
+
+  No aplica a los campos date porque esos no llegan a ser comparados
+  directamente — _day_bounds() en el repositorio construye sus límites ya en
+  UTC.
+
+  ---
+
+  Lo que este archivo deliberadamente no hace
+
+  No importa SQLAlchemy, no conoce DemandHistory, no arma queries. Recibe
+  strings de una URL y devuelve un objeto tipado y validado. Eso lo hace
+  testeable sin base de datos (como recién), y significa que si mañana cambiás
+  de ORM, este archivo no se toca.
+
+  La traducción a SQL vive entera en _build_conditions() del repositorio.
+
+  ---
+
+  Dos cosas menores que noté releyéndolo: el import muerto de time (línea 1) y
+  el ORDER BY id DESC, id DESC redundante que mencioné antes. Ambas son de una
+  línea; decime si querés que las limpie.
+
+✻ Worked for 1m 19s
+
+❯ limpialas                                                                     
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● El cd falló y el grep corrió contra una ruta inexistente, así que ese "ok" no
+  vale. Uso rutas absolutas:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Ahora el ORDER BY redundante:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Verifico el SQL generado y vuelvo a correr la suite completa:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Listas las dos.
+
+  1. Import muerto — filters.py:1 quedó from datetime import date, datetime, 
+  timezone. Confirmé que no había ningún otro uso de time en el archivo.
+
+  2. ORDER BY redundante — el desempate ahora se agrega solo cuando hace falta:
+
+  order_by = [column.asc() if query.order == "asc" else column.desc()]
+  if query.sort_by != "id":
+      order_by.append(DemandHistory.id.desc())
+
+  El SQL generado, en los cuatro casos:
+
+  ┌───────────────────────┬───────────────────────────┐
+  │         Query         │         ORDER BY          │
+  ├───────────────────────┼───────────────────────────┤
+  │ default               │ id DESC                   │
+  ├───────────────────────┼───────────────────────────┤
+  │ sortBy=id&order=asc   │ id ASC                    │
+  ├───────────────────────┼───────────────────────────┤
+  │ sortBy=receivedAt     │ received_at DESC, id DESC │
+  ├───────────────────────┼───────────────────────────┤
+  │ sortBy=city&order=asc │ city ASC, id DESC         │
+  └───────────────────────┴───────────────────────────┘
+
+  Ya no se duplica cuando ordenás por id (que de por sí es orden total), y el
+  desempate se mantiene donde sí importa. Nota que respeta el order: con
+  sortBy=id&order=asc queda id ASC, no un ASC seguido de un DESC contradictorio
+  — que es el bug que habría introducido concatenar el desempate a ciegas.
+
+  Los 13 casos de la suite siguen pasando, incluido el de orden ascendente.
+
+✻ Sautéed for 45s

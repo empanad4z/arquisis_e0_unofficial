@@ -15,3 +15,13 @@ class DemandHistoryOut(BaseModel):
     valid_until: datetime
     meta_content: str | None
     received_at: datetime
+
+
+class Page[T](BaseModel):
+    """Respuesta paginada generica: los items mas la metadata para navegar."""
+
+    items: list[T]
+    total: int
+    page: int
+    limit: int
+    pages: int

@@ -1,5 +1,7 @@
 import json
 import logging
+import math
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import ValidationError
@@ -7,8 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.repositories.demand_history_repository import DemandHistoryRepository
-from app.schemas.demand_history import DemandHistoryOut
+from app.schemas.demand_history import DemandHistoryOut, Page
 from app.schemas.event import Event
+from app.schemas.filters import DemandHistoryQuery
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +46,18 @@ async def find_event(id: int, db: AsyncSession = Depends(get_db)):
     return record
 
 
-@router.get("/history", response_model=list[DemandHistoryOut])
+@router.get("/history", response_model=Page[DemandHistoryOut])
 async def show_events(
-    page: int = Query(default=1, ge=1),
-    limit: int = Query(default=25, ge=1),
+    query: Annotated[DemandHistoryQuery, Query()],
     db: AsyncSession = Depends(get_db),
 ):
     repository = DemandHistoryRepository(db)
-    return await repository.list_paginated(page=page, limit=limit)
+    total = await repository.count(query)
+    items = await repository.search(query)
+    return Page(
+        items=items,
+        total=total,
+        page=query.page,
+        limit=query.limit,
+        pages=math.ceil(total / query.limit),
+    )
