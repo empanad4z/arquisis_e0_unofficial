@@ -22,11 +22,15 @@ services:
     build:
       context: ./master
       dockerfile: Dockerfile
-    container_name: master
     ports:
-      - "8080:8000"
+      # Range instead of a single host port: each replica claims one port
+      # from it, and nginx's upstream block (nginx/api.empanad4z.me.conf)
+      # balances across 127.0.0.1:8080-8081.
+      - "8080-8081:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    deploy:
+      replicas: 2
     depends_on:
       postgres:
         condition: service_healthy
