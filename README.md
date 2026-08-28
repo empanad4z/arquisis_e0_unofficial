@@ -9,6 +9,7 @@
 - **Acceso SSH:** `ssh -i <archivo>.pem ubuntu@35.168.184.246`
 - Prompts de IA usados durante el desarrollo documentados en `aidocs/prompts/`.
 - **Configuración nginx utilizada (REPO/EC2)**: `nginx/api.empanad4z.me.conf` / `/etc/nginx/sites-available/api.empanad4z.me`
+- **Por favor verificar que estás en la región `us-east-1` al momento de ingresar a la consola aws con credenciales.**
 
 ### Parte mínima
 
